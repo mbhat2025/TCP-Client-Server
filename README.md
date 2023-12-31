@@ -1,0 +1,1 @@
+Developed a TCP Server and TCP Client application capable of facilitating message exchange among multiple clients. The program accepts a command line argument specifying the port number for TCP Server connection requests. Each remote client's data is managed by a separate thread, allowing continuous data exchange until either the client or server terminates the connection.
