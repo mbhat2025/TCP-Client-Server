@@ -1,213 +1,127 @@
-
-////////////////////////////////////////////////////////////
-// Headers
-////////////////////////////////////////////////////////////
 #include <SFML/Network.hpp>
-#include <sstream>
 #include <iostream>
-#include <cstdlib>
-#include <list>
-#include<cstring>
-#include <pthread.h>
- 
-// tcpMessage packet defination
-struct tcpMessage {
+#include <cstring>
+#include <thread>
+#include <mutex>
+
+struct tcpMessage
+{
     unsigned char nVersion;
     unsigned char nType;
     unsigned short nMsgLen;
     char chMsg[1000];
 };
- 
- 
-tcpMessage lastMsg; // Latest message received among all the clients
-bool exitProgram = false; // Indication to exit the code
-bool newMsgReceived = false; // Indication when new message is received, which is used for loop back and broadcasting
-unsigned short newMsgReceivedClientID;
-// Create a list to store the future clients
-std::list<sf::TcpSocket*> clients;
- 
- 
-bool split(const std::string& str, char delimiter, int maxSplits, std::vector<std::string>& result) {
-    int iteration = 0;
- 
-    size_t start = 0;
-    size_t end = 0;
-    while (iteration < maxSplits && (end = str.find(delimiter, start)) != std::string::npos) {
-        result.push_back(str.substr(start, end - start));
-        start = end + 1;
-        iteration++;
-    }
- 
-    // Add the last part of the string
-    result.push_back(str.substr(start));
- 
-    return (iteration > 0);
-}
- 
-void* runTcpServer(void* serverPort)
-{
-    // Create a socket to listen to new connections
-    unsigned short port = *reinterpret_cast<unsigned short*>(serverPort);
-    sf::TcpListener listener;
-    listener.listen(port);
-    // Create a selector
-    sf::SocketSelector selector;
-    // Add the listener to the selector
-    selector.add(listener);
-    unsigned int nVersionLatest = 0;
-    unsigned int nTypeLatest    = 0;
-    // Endless loop that monitors connections
-    while (!exitProgram)
-    {
-        if(newMsgReceived)
-        {
-            for (auto it1 = clients.begin(); it1 != clients.end(); ++it1)
-            {
-                sf::TcpSocket& clientLoc = **it1;
-                
-                if(((clientLoc.getRemotePort() != newMsgReceivedClientID) && (nTypeLatest == 77)) ||
-                   ((clientLoc.getRemotePort() == newMsgReceivedClientID) && (nTypeLatest == 201))  )
-                {
-if (nTypeLatest == 201)
-                {
-                    // Reverse the message
-                    std::string reversedMsg(lastMsg.chMsg);
-                    std::reverse(reversedMsg.begin(), reversedMsg.end());
- 
-                    // Update the message with the reversed one
-                    strncpy(lastMsg.chMsg, reversedMsg.c_str(), sizeof(lastMsg.chMsg));
-}
- 
-                    void* buffer =  &lastMsg;
-                    if (clientLoc.send(buffer, sizeof(lastMsg)) != sf::Socket::Done)
-                        std::cout << "not able  to send message to client " << clientLoc.getRemotePort() << " from server !";
-                }
- 
-            }
-            newMsgReceived = false;
-        }
-        // Make the selector wait for data on any socket
-        if (selector.wait())
-        {
-            // Test the listener
-            if (selector.isReady(listener))
-            {
-                // The listener is ready: there is a pending connection
-                sf::TcpSocket* client = new sf::TcpSocket;
-                if (listener.accept(*client) == sf::Socket::Done)
-                {
-                
-                    clients.push_back(client);
-                    // Add the new client to the selector so that we will
- 
-                    selector.add(*client);
-                }
-                else
-                {
-                    // Error, we won't get a new connection, delete the socket
-                    delete client;
-                }
-            }
-            else
-            {
-                
-    	        for (auto it = clients.begin(); it != clients.end();)
-                {
-                    sf::TcpSocket& client = **it;
-                    if (selector.isReady(client))
-                    {
-                        
-    		            tcpMessage rxMsg;
-        	            std::size_t received;
-                        void* buffer = &rxMsg;
-        	            if (client.receive(buffer, sizeof(rxMsg), received) == sf::Socket::Done)
-                        {
-                            tcpMessage* receivedMsg = static_cast<tcpMessage*>(buffer);
-                            nVersionLatest = static_cast<unsigned int>(receivedMsg->nVersion);
-                            nTypeLatest    = static_cast<unsigned int>(receivedMsg->nType);
-                            //  if version == 102 
-                            if(nVersionLatest == 102)
-                            {
-    			                lastMsg.nVersion = receivedMsg->nVersion ;
-    			                lastMsg.nType    = receivedMsg->nType    ;
-                                for (int i = 0; i < 1000; ++i) 
-                                {
-                                    lastMsg.chMsg[i] = receivedMsg->chMsg[i];
-                                }
-    			                lastMsg.nMsgLen  = receivedMsg->nMsgLen  ;
-                                newMsgReceived = true;
-                                newMsgReceivedClientID =  client.getRemotePort();
-                            }
-                        }
-                        else
-                        {
-                            // Client disconnected, remove from the list
-                            selector.remove(client);
-                            it = clients.erase(it);
-                            delete &client;
-                            continue;
-                        }
-                    }
-                    ++it;
-                }
-            }
-        }
-    }
-    return nullptr;
-}
- 
- 
-////////////////////////Main function////////////////////////////////////
-int main(int argc, char* argv[])
-{
-    //Assigning socket port
-    unsigned short port = 50001;
+tcpMessage lastReceivedMessage;
+std::mutex messageMutex;
 
-    if (argc == 2) 
+void handleClient(sf::TcpSocket& client)
+{
+    while (true)
     {
-            port = static_cast<unsigned short>(std::stoi(argv[1]));
- 
-    }
-    pthread_t serverThread;
-    pthread_create(&serverThread,nullptr,runTcpServer,&port);
- 
-    UserInput:
-    std::cout << "Please enter command: ";
-    std::string ipAdd;
-    std::vector<std::string> result;
- 
-    // reading the ipAddress
-    std::getline(std::cin, ipAdd);
-    split(ipAdd,' ',3,result);
-    bool valid = (result.size() == 1);
-    valid = valid && ((result[0] == "msg") || (result[0] == "clients") || (result[0] == "exit"));
-    if(!valid )
-    {
-        std::cout << "Please enter valid command with no spaces " << std::endl;
-    }
-    if(result[0] == "msg") 
-        std::cout << "Last Message: " << lastMsg.chMsg << std::endl;
-    if(result[0] == "clients" ) 
-    {
-        std::cout << "Number of Clients: " << clients.size() << std::endl;
-        // Printing all the clients from list which we added in socketselector
-        for (const auto& client : clients) 
+        tcpMessage receivedMessage;
+        std::size_t received;
+
+        // Receive Message from the client
+        if (client.receive(&receivedMessage, sizeof(receivedMessage), received) == sf::Socket::Done)
         {
-            
-            unsigned short remotePort = client->getRemotePort();
- 
-            std::cout << "IP Address: " << "localhost" <<" | Port: " << remotePort <<std::endl;
+            std::string strmsg = receivedMessage.chMsg;
+            std::cout << strmsg << std::endl;
+
+            // Handle received message
+            if (receivedMessage.nVersion == 102)
+            {
+                if (receivedMessage.nType == 77)
+                {
+                    // Forward the message to the same client
+                    client.send(&receivedMessage, sizeof(receivedMessage));
+                    std::lock_guard<std::mutex> lock(messageMutex);
+                    std::memcpy(lastReceivedMessage.chMsg, receivedMessage.chMsg, sizeof(receivedMessage.chMsg));
+                }
+                else if (receivedMessage.nType == 201)
+                {
+                    // Reverse the message and send it back to the same client
+                    std::reverse(receivedMessage.chMsg, receivedMessage.chMsg + receivedMessage.nMsgLen);
+
+                    client.send(&receivedMessage, sizeof(receivedMessage));
+                    std::lock_guard<std::mutex> lock(messageMutex);
+                    std::memcpy(lastReceivedMessage.chMsg, receivedMessage.chMsg, sizeof(receivedMessage.chMsg));
+                }
+            }
+        }
+        else
+        {
+            break; // Break out of the loop 
         }
     }
- 
-    if(result[0] != "exit") 
+}
+
+void acceptClient(sf::TcpListener& listener, sf::TcpSocket& client)
+{
+    // Wait for a new client to connect, this is blocking function
+    if (listener.accept(client) != sf::Socket::Done)
     {
-        goto UserInput;
+        std::cerr << "Failed to accept a client connection" << std::endl;
     }
- 
-    exitProgram = true;
- 
-    
- 
+}
+
+int main(int argc, char** argv)
+{
+    if (argc != 2)
+    {
+        std::cerr << "Usage: " << argv[0] << " <port>" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    unsigned short port = static_cast<unsigned short>(std::stoi(argv[1]));
+
+    // Set up the listener
+    sf::TcpListener listener;
+    if (listener.listen(port) != sf::Socket::Done)
+    {
+        std::cerr << "Failed to bind to port " << port << std::endl;
+        return 0;
+    }
+
+    std::cout << "Server is listening on port " << port << std::endl;
+
+    // Start a thread for accepting the connected client
+    sf::TcpSocket client;
+    std::thread clientAcceptor(acceptClient, std::ref(listener), std::ref(client));
+
+    // Start a thread for handling the connected client
+    std::thread clientHandler(handleClient, std::ref(client));
+
+    // Main thread for user input
+    while (true)
+    {
+        // Prompt user for commands
+        std::string command;
+        std::cout << "Please enter command: ";
+        std::cin >> command;
+        // Handle user commands here
+        if (command == "msg")
+        {
+            std::lock_guard<std::mutex> lock(messageMutex);
+            std::string strmsg = lastReceivedMessage.chMsg;
+            std::cout << "Last Message: " << strmsg << std::endl;
+        }
+        else if (command == "client")
+        {
+            std::cout << "IP Address: " << client.getRemoteAddress() << " | Port: " << client.getRemotePort() << std::endl;
+        }
+        else if (command == "exit")
+        {
+            // Close the socket and terminate the program
+            std::cout << "get out";
+            client.disconnect();
+            break;
+        }
+    }
+
+    // Wait for the client handling and accepting threads to finish before exiting
+    clientAcceptor.join();
+    clientHandler.join();
     return 0;
 }
+
+server from mine
