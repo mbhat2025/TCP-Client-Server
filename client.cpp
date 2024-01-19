@@ -12,239 +12,154 @@ This file has functions for client, Used two background threads each one for use
 // Headers
 ////////////////////////////////////////////////////////////
 #include <SFML/Network.hpp>
-#include <sstream>
 #include <iostream>
-#include <cstdlib>
+#include <cstring>
+#include <sstream>
+#include <thread>
 #include <pthread.h>
-#include <atomic>
-#include <chrono>
 
-// tcpMessage packet defination
-struct tcpMessage {
+struct tcpMessage
+{
     unsigned char nVersion;
     unsigned char nType;
     unsigned short nMsgLen;
     char chMsg[1000];
 };
+// Function to split a string into a vector of strings using a delimiter
 
-// Global Variables used across background threads running
-sf::TcpSocket socket;
-unsigned int updatedVersion; 
-bool       exitProgram = false; // Flag used to exit the program
-tcpMessage latestMsg; 
-
-// atomic variable used to synchronization and exits the terminal
-std::atomic<bool> exitFlag(false);
-std::atomic<bool> newMsgReceived(false);
-
-bool isNaturalNumber(const std::string& str) 
+bool split(const std::string& s, char delimiter, std::vector<std::string>& results)
 {
-    if (str.empty()) 
+    bool bRC = true;
+    if (s.empty())
     {
-        return false;
+        bRC = false;
     }
-    
-    for (char ch : str) 
+    else
     {
-        
-        if (!std::isdigit(ch)) {
-            return false;
-        }
-    }
-    // Convert the string to an integer and check if it's non-negative
-    int num = std::stoi(str);
-    return num >= 0;
-}
+        std::string token;
+        std::istringstream tokenStream(s);
 
-bool split(const std::string& str, char delimiter, int maxSplits, std::vector<std::string>& result) {
-    int iteration = 0;
-
-    size_t start = 0;
-    size_t end = 0;
-    while (iteration < maxSplits && (end = str.find(delimiter, start)) != std::string::npos) {
-        result.push_back(str.substr(start, end - start));
-        start = end + 1;
-        iteration++;
-    }
-
-    // Add the last part of the string
-    result.push_back(str.substr(start));
-
-    return (iteration > 0);
-}
-
-void* runUserInput(void* port)
-{
-    // Dummy Logic
-    unsigned short serverPort = *reinterpret_cast<unsigned short*>(port);
-    if(serverPort == 0)
-    {
-        serverPort = *reinterpret_cast<unsigned short*>(port);
-    }
-
-    UserInput:
-    tcpMessage txMsg;
-    std::cout << "Please enter command: ";
-    std::string ipString;
-    std::vector<std::string> result; 
-
-    // Use getline to read a line from cin into the string
-    std::getline(std::cin, ipString);
-    split(ipString,' ',2,result);
-    if(result[0] == "t")
-    {
-        // Validating the user input data for command 't'
-        if((isNaturalNumber(result[1])) && (result.size() == 3))
+        while (std::getline(tokenStream, token, delimiter))
         {
-            txMsg.nVersion = static_cast<unsigned char>(updatedVersion);
-            txMsg.nType    = static_cast<unsigned char>(std::stoi(result[1]));
-            result[2].copy(txMsg.chMsg, result[2].size());
-            txMsg.chMsg[result[2].size()] = '\0';
-            txMsg.nMsgLen  = static_cast<unsigned short>(result[2].size()); 
-            void* buffer =  &txMsg;
-            // Sending the TCP message to server
-            if (socket.send(buffer, sizeof(txMsg)) != sf::Socket::Done)
-                return nullptr;
-        }
-        else 
-        {
-            std::cout << "Please enter valid input for command t " << std::endl;
+            if (token != " ")
+                results.push_back(token);
         }
     }
-    else if(result[0] == "v")
-    {
-        if((isNaturalNumber(result[1])) && (result.size() == 2))
-        {
-            // Updating the version variable which is used for future messages
-            updatedVersion = static_cast<unsigned int>(std::stoi(result[1]));
-        }
-        else 
-        {
-            std::cout << "Please enter valid input for command v " << std::endl;
-        }
-    }
-    else if((result[0] != "q") && (result[0] != ""))
-    {
-        std::cout << "Please enter valid command " << std::endl;
-    }
 
-    // if command is not 'q' we need to rerun the command for user inputs
-    if(result[0] != "q") 
-        goto UserInput;
-
-    exitProgram = true;
-
-    // Disconnecting the client from the server, which results is removal of this client from socketselector for which server listens the data
-    socket.disconnect();
-
-    // Flaggin the exiting logic
-    exitFlag.store(true, std::memory_order_relaxed);
-    return nullptr;
-}
-
-void* runTcpClient(void* port)
-{
-    // Dummy Logic
-    unsigned short serverPort = *reinterpret_cast<unsigned short*>(port);
-    if(serverPort == 0)
-    {
-        serverPort = *reinterpret_cast<unsigned short*>(port);
-    }
-
-    tcpMessage rxMsg;
-    Receive:
-    std::size_t received;
-    void* buffer = &rxMsg;
-
-    // Receive the packet from server
-    if (socket.receive(buffer, sizeof(rxMsg), received) == sf::Socket::Done)
-    {
-        tcpMessage* receivedMsg = static_cast<tcpMessage*>(buffer);
-        latestMsg.nVersion = receivedMsg->nVersion ;
-        latestMsg.nType    = receivedMsg->nType    ;
-        for (int i = 0; i < 1000; ++i) 
-        {
-            latestMsg.chMsg[i] = receivedMsg->chMsg[i];
-        }
-        latestMsg.nMsgLen  = receivedMsg->nMsgLen  ;
-        std::cout << std::endl;
-        // Printing the message received from the server
-        std::cout << "Received Msg Type: " << static_cast<unsigned int>(latestMsg.nType) << "; Msg: " << latestMsg.chMsg  << std::endl;
-
-        // Flagging the newMsgReceived for reinvoking the user-input background thread (written in main)
-        newMsgReceived.store(true, std::memory_order_relaxed);
-
-        // Continue receiving the packets from server
-        goto Receive;
-    }
-
- 
-    exitFlag.store(true, std::memory_order_relaxed);
-    return nullptr;
+    return bRC;
 }
 
 
-////////////////////////////////////////////////////////////
-/// Entry
-///
-
-int main(int argc, char* argv[]) 
+void receiveMessage(sf::TcpSocket& socket)
 {
-    // Choose an arbitrary port for opening sockets
-    unsigned short port = 50001;
+   while(true)
+   {
+      tcpMessage receivedMessage;
+      std::size_t received;
+      if (socket.receive(&receivedMessage, sizeof(receivedMessage), received) == sf::Socket::Done)
+      {
+        return;
+      }
 
-    // Validating the inputs given from command line
-    if (argc != 3) 
-    {
-        std::cout << "Invalid arguments proper usage: " << argv[0] << " <server IP> <port>" << std::endl;
-        return EXIT_FAILURE;
-    }
-    else 
-    {
-        if(!isNaturalNumber(argv[2]))
-        {
-            std::cout << "Invalid arguments proper usage: " << argv[0] << " <server IP> <port>" << std::endl;
-            return EXIT_FAILURE;
-        }
-    }
-    
-    // Ask for the server address
+   }
+}
+
+int main(int argc, char** argv)
+{
+    // Create a socket for communicating with the server
+    sf::TcpSocket socket;
+    // Start a separate thread to this thread send the receive function and its arguments
+    std::thread receiverthread(receiveMessage, std::ref(socket));
+     //This IPAddress is given to sfml serverIP application
     sf::IpAddress serverIP;
-    serverIP = argv[1];
-    port = static_cast<unsigned short>(std::stoi(argv[2]));
+//This is for command line arguments
+    if (argc != 3)
+    {
+        std::cerr << "Usage: " << argv[0] << " <ip address> <port>" << std::endl;
+        return -1;
+    }
 
-    // Connect to the server
+// This is when client gets IPAddress its string index is 1
+//sf:: is for SFML
+   
+    serverIP = argv[1]; 
+
+    unsigned short port = static_cast<unsigned short>(std::stoi(argv[2]));
+
+    
+
+    // Connect to the server from TCP.cpp program
     if (socket.connect(serverIP, port) != sf::Socket::Done)
     {
-        std::cout << "Cant Connected to server " << serverIP << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << "Failed to connect to the server" << std::endl;
+        return -1;
     }
 
+    std::cout << "Connected to server " << serverIP << " | Port: " << port << std::endl;
 
-    RunClient:
-    pthread_t backgroundUserThread;
-    pthread_t backgroundClientThread;
-    // Reset the atomic variable which will be setted from receive background thread
-    newMsgReceived.store(false, std::memory_order_relaxed);
+    // Set up the tcpMessage structure
+    tcpMessage sendMessage;
 
-    pthread_create(&backgroundUserThread,nullptr,runUserInput, &port);
-    pthread_create(&backgroundClientThread,nullptr,runTcpClient, &port);
-    
-
-    while (true) 
+    while (true)
     {
-        if (exitFlag.load(std::memory_order_relaxed)) 
+        // Prompt user for commands
+        std::string command;
+        std::cout << "Please enter command: ";
+        std::getline(std::cin, command);
+// send the whole command to bool split function
+        std::vector<std::string> chkcmd;
+        split(command,' ', chkcmd);
+        if (chkcmd[0] == "v")
+        {  // Set version number
+            
+            sendMessage.nVersion = static_cast<unsigned char>(std::stoi(chkcmd[1]));
+        }
+        else if (chkcmd[0] == "t")
         {
-            // Exit the forever loop and end the program
+            // this prof gave Split the command into tokens using space as delimiter // this is the only thing i didnt get
+            if (chkcmd.size() >= 2)
+            {
+                // Extract type number and message string
+                sendMessage.nType = static_cast<unsigned char>(std::stoi(chkcmd[1]));
+
+                // Combine the remaining tokens as the message string because t and "" is not counted
+                // to find msglen 
+                
+                std::string message;
+                for (unsigned int i = 2;i < chkcmd.size(); ++i)
+                {
+                   message += chkcmd[i];
+                   if(i < chkcmd.size() - 1)
+                   {
+                     message += ' ';
+                   }
+                }
+                sendMessage.nMsgLen = static_cast<unsigned short>(message.size());
+                std::strncpy(sendMessage.chMsg, message.c_str(), sizeof(sendMessage.chMsg) - 1);
+                sendMessage.chMsg[sizeof(sendMessage.chMsg) - 1] = '\0';
+                // Display any messages received from the server
+// Here we are taking pointer to the structure and not the full data like in tcp code            // Send the message to the server
+                if (socket.send(&sendMessage, sizeof(sendMessage)) != sf::Socket::Done)
+                {
+                    std::cerr << "Failed to send message to the server" << std::endl;
+                    break;
+                }
+                std::cout << sendMessage.chMsg << std::endl;
+            }
+        }
+        else if (chkcmd[0] == "q")
+        {
+            // Close the socket and terminate the program
+            socket.disconnect();
             break;
         }
-        if (newMsgReceived.load(std::memory_order_relaxed)) 
+        else
         {
-            // Reinvoke the background threads when new message is received
-            goto RunClient;
+            std::cout << "Invalid command. Please enter 'v', 't', or 'q'." << std::endl;
         }
-    
     }
-
-    return EXIT_SUCCESS;
+    receiverthread.join();
+    return 0;
 }
+
+
